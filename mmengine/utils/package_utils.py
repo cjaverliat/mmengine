@@ -3,7 +3,9 @@ import os.path as osp
 import subprocess
 from importlib.metadata import PackageNotFoundError, distribution
 from typing import Any
-
+import importlib.util
+import importlib.metadata
+from pathlib import Path
 
 def is_installed(package: str) -> bool:
     """Check package whether installed.
@@ -26,71 +28,50 @@ def is_installed(package: str) -> bool:
         return False
 
 
-def get_installed_path(package: str) -> str:
-    """Get installed path of package.
+def get_installed_path(package: str) -> Path:
+    """Return the installed directory of a package.
 
-    Args:
-        package (str): Name of package.
+    Handles cases where the package name differs from the module name
+    (e.g. 'mmcv-full' → 'mmcv').
 
-    Example:
-        >>> get_installed_path('mmcls')
-        >>> '.../lib/python3.7/site-packages/mmcls'
+    Raises:
+        importlib.metadata.PackageNotFoundError: package not installed
+        RuntimeError: package is a namespace package with no concrete location
     """
-    import importlib.util
-
-    # if the package name is not the same as module name, module name should be
-    # inferred. For example, mmcv-full is the package name, but mmcv is module
-    # name. If we want to get the installed path of mmcv-full, we should concat
-    # the pkg.location and module name
-    # Try to get location from distribution package metadata
-    location = None
+    # 1. Try importlib.metadata first — works for any installed distribution
     try:
-        dist = distribution(package)
-        locate_result: Any = dist.locate_file('')
-        location = str(locate_result.parent)
-    except PackageNotFoundError:
+        dist = importlib.metadata.distribution(package)
+        module_name = _dist_top_level_module(dist) or package
+        location = Path(str(dist.locate_file("")))
+        candidate = location / module_name
+        if candidate.is_dir():
+            return candidate
+    except importlib.metadata.PackageNotFoundError:
         pass
 
-    # If distribution package not found, try to find via importlib
-    if location is None:
-        spec = importlib.util.find_spec(package)
-        if spec is not None:
-            if spec.origin is not None:
-                return osp.dirname(spec.origin)
-            else:
-                # `get_installed_path` cannot get the installed path of
-                # namespace packages
-                raise RuntimeError(
-                    f'{package} is a namespace package, which is invalid '
-                    'for `get_install_path`')
-        else:
-            raise PackageNotFoundError(f'Package {package} is not installed')
-
-    # Check if package directory exists in the location
-    possible_path = osp.join(location, package)
-    if osp.exists(possible_path):
-        return possible_path
-    else:
-        return osp.join(location, package2module(package))
+    # 2. Fall back to importlib.util for editable installs / oddball layouts
+    spec = importlib.util.find_spec(package)
+    if spec is None:
+        raise importlib.metadata.PackageNotFoundError(
+            f"Package {package!r} is not installed"
+        )
+    if spec.origin is not None:
+        return Path(spec.origin).parent
+    if spec.submodule_search_locations:
+        return Path(next(iter(spec.submodule_search_locations)))
+    raise RuntimeError(
+        f"{package!r} is a namespace package with no concrete location"
+    )
 
 
-def package2module(package: str) -> str:
-    """Infer module name from package.
-
-    Args:
-        package (str): Package to infer module name.
-    """
-    dist = distribution(package)
-
-    # In importlib.metadata,
-    # top-level modules are in dist.read_text('top_level.txt')
-    top_level_text = dist.read_text('top_level.txt')
-    if top_level_text is not None:
-        lines = top_level_text.strip().split('\n')
-        if lines:
-            module_name = lines[0].strip()
-            return module_name
-    raise ValueError(f'can not infer the module name of {package}')
+def _dist_top_level_module(dist: importlib.metadata.Distribution) -> str | None:
+    """Infer the top-level module name from distribution metadata."""
+    top_level = dist.read_text("top_level.txt")
+    if top_level:
+        first = top_level.strip().splitlines()[0].strip()
+        if first:
+            return first
+    return None
 
 
 def call_command(cmd: list) -> None:
