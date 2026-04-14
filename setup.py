@@ -2,8 +2,7 @@ import os
 import re
 from setuptools import find_packages, setup  # type: ignore
 
-from pkg_resources import DistributionNotFound, get_distribution
-
+from importlib.metadata import distribution, PackageNotFoundError
 
 def readme():
     with open('README.md', encoding='utf-8') as f:
@@ -19,8 +18,8 @@ def choose_requirement(primary, secondary):
     return secondary."""
     try:
         name = re.split(r'[!<>=]', primary)[0]
-        get_distribution(name)
-    except DistributionNotFound:
+        distribution(name)
+    except PackageNotFoundError:
         return secondary
 
     return str(primary)
